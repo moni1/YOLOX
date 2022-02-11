@@ -46,7 +46,6 @@ class Trainer:
         self.local_rank = get_local_rank()
         self.device = "cuda:{}".format(self.local_rank)
         self.use_model_ema = exp.ema
-        self.save_history_ckpt = exp.save_history_ckpt
 
         # data/dataloader related attr
         self.data_type = torch.float16 if args.fp16 else torch.float32
@@ -175,7 +174,7 @@ class Trainer:
         )
         # Tensorboard logger
         if self.rank == 0:
-            self.tblogger = SummaryWriter(os.path.join(self.file_name, "tensorboard"))
+            self.tblogger = SummaryWriter(self.file_name)
 
         logger.info("Training start...")
         logger.info("\n{}".format(model))
@@ -270,7 +269,6 @@ class Trainer:
             # resume the model/optimizer state dict
             model.load_state_dict(ckpt["model"])
             self.optimizer.load_state_dict(ckpt["optimizer"])
-            self.best_ap = ckpt.pop("best_ap", 0)
             # resume the training states variables
             start_epoch = (
                 self.args.start_epoch - 1
@@ -304,9 +302,6 @@ class Trainer:
         ap50_95, ap50, summary = self.exp.eval(
             evalmodel, self.evaluator, self.is_distributed
         )
-        update_best_ckpt = ap50_95 > self.best_ap
-        self.best_ap = max(self.best_ap, ap50_95)
-
         self.model.train()
         if self.rank == 0:
             self.tblogger.add_scalar("val/COCOAP50", ap50, self.epoch + 1)
@@ -314,9 +309,8 @@ class Trainer:
             logger.info("\n" + summary)
         synchronize()
 
-        self.save_ckpt("last_epoch", update_best_ckpt)
-        if self.save_history_ckpt:
-            self.save_ckpt(f"epoch_{self.epoch + 1}")
+        self.save_ckpt("last_epoch", ap50_95 > self.best_ap)
+        self.best_ap = max(self.best_ap, ap50_95)
 
     def save_ckpt(self, ckpt_name, update_best_ckpt=False):
         if self.rank == 0:
@@ -326,7 +320,6 @@ class Trainer:
                 "start_epoch": self.epoch + 1,
                 "model": save_model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
-                "best_ap": self.best_ap,
             }
             save_checkpoint(
                 ckpt_state,
